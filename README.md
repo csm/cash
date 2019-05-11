@@ -1,0 +1,1 @@
+Toy project for tracking finances in clojure/datomic.
