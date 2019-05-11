@@ -1,5 +1,8 @@
 (ns cash.core
-  (:require [datomic.api :as d])
+  (:require [aleph.http :as http]
+            [cash.handler :refer [handler]]
+            [datomic.api :as d]
+            [cash.plaid-client :as plaid])
   (:import [java.util Date]))
 
 (def schema
@@ -29,7 +32,11 @@
    {:db/ident :account/collateral
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/many
-    :db/doc "Collateral (refs to assets) "}
+    :db/doc "Collateral (refs to assets)."}
+   {:db/ident :account/plaid
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc "The Plaid access token for this account, if any."}
    [:db/add "accountType/checking" :db/ident :accountType/checking]
    [:db/add "accountType/savings" :db/ident :accountType/savings]
    [:db/add "accountType/credit-card" :db/ident :accountType/credit-card]
@@ -66,16 +73,31 @@
     :db/index true
     :db/doc "The name of the asset."}
    {:db/ident :asset/value
-    :db/valueType}])
+    :db/valueType :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc "The value of this asset."}
+   {:db/ident :asset/type
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc "The asset type, ref to :assetType/*"}
+   [:db/add "assetType/real-estate" :db/ident :assetType/real-estate]
+   {:db/ident :plaid/access-token
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "A Plaid access token for an item."}
+   {:db/ident :plaid/item-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "A Plaid item ID."}])
 
 (defn init!
   [db-name]
   (let [db-names (set (d/get-database-names "datomic:free://localhost:4334/*"))
         exists? (some? (db-names db-name))]
-    (when (nil? (db-names db-name))
+    (when-not exists?
       (d/create-database (str "datomic:free://localhost:4334/" db-name)))
     (let [conn (d/connect (str "datomic:free://localhost:4334/" db-name))]
-      (when (nil? (db-names db-name))
+      (when-not exists?
         (d/transact conn schema))
       conn)))
 
@@ -104,3 +126,20 @@
             (throw result))
           result)))
     (throw (IllegalArgumentException. "no such account found"))))
+
+(defn net-worth
+  [conn]
+  (+ (or (ffirst (d/q '[:find (sum ?a) :in $ :where [_ :account/balance ?a]] (d/db conn)))
+         0)
+     (or (ffirst (d/q '[:find (sum ?a) :in $ :where [_ :asset/value ?a]] (d/db conn)))
+         0)))
+
+(defn start-server
+  [plaid opts]
+  (http/start-server (handler {:db-conn (init! "accounts")
+                               :plaid plaid})
+                     opts))
+
+(defn start-sandbox
+  [opts]
+  (start-server (plaid/->sandbox) opts))
